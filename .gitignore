@@ -1,0 +1,20 @@
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+# Env
+.env
+
+# Generated reports
+/tta-report/
+/reports/
+/allure-results/
+/allure-report/
+
+# macOS
+.DS_Store
