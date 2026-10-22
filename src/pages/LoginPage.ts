@@ -1,36 +1,52 @@
-// Login
-import { Page, Locator, expect } from '@playwright/test';
+import { expect, Locator, Page } from '@playwright/test';
+import { BasePage } from './BasePage';
 
-export class LoginPage {
-    // Page Locators
-    readonly page: Page;
-    readonly emailInput: Locator;
-    readonly passwordInput: Locator;
-    readonly loginButton: Locator;
+/**
+ * TTACart login screen.
+ *
+ *   const login = new LoginPage(page);
+ *   await login.open();
+ *   await login.loginAs('standard_user', 'tta_secret');
+ */
+
+
+
+export class LoginPage extends BasePage {
+
+    static readonly PATH = '/playwright/ttacart/index.html';
+
+    private readonly usernameInput: Locator;
+    private readonly passwordInput: Locator;
+    private readonly loginButton: Locator;
+    private readonly errorBox: Locator;
+    private readonly loginCredentialsHint: Locator;
 
     constructor(page: Page) {
-        this.page = page;
-        this.emailInput = page.getByRole("textbox", { name: "Username" });
-        this.passwordInput = page.getByRole("textbox", { name: "Password" })
-        // TTACart uses data-test, not Playwright's default data-testid.
+        super(page, 'LoginPage');
+        this.usernameInput = page.locator('[data-test="username"]');
+        this.passwordInput = page.locator('[data-test="password"]');
         this.loginButton = page.locator('[data-test="login-button"]');
+        this.errorBox = page.locator('[data-test="error"]');
+        this.loginCredentialsHint = page.locator('[data-test="login-credentials"]');
     }
 
-    // Page Actions
-    async goto() {
-        await this.page.goto('https://app.thetestingacademy.com/playwright/ttacart/');
+    async open(): Promise<void> {
+        this.log.info("Open login pgae");
+        await this.goto(LoginPage.PATH);
     }
 
-    async login(username: string, password: string) {
-        await this.emailInput.fill(username);
-        await this.passwordInput.fill(password);
-        await this.loginButton.click();
+    async loginAs(username: string, password: string): Promise<void> {
+        this.log.info(`loginAs ${username}`);
+        await this.el.fill(this.usernameInput, username);
+        await this.el.fill(this.passwordInput, password);
+        await this.el.click(this.loginButton);
+        await expect.poll(async () => (
+            this.page.url().includes('/inventory') || await this.errorBox.isVisible()
+        )).toBe(true);
     }
 
-
-
-
-
-
+    async waitForLoginButtonHidden(): Promise<void> {
+        await this.el.waitForHidden(this.loginButton);
+    }
 
 }
