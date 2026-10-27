@@ -24,7 +24,7 @@ const lineFormat = printf(({ level, message, timestamp: ts, scope }) => {
 });
 
 export const logger = winston.createLogger({
-    level: LOG_LEVEL,
+    level: process.env.LOG_LEVEL || 'info',
     format: combine(
         errors({ stack: true }),
         timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),

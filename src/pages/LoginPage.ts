@@ -31,7 +31,7 @@ export class LoginPage extends BasePage {
     }
 
     async open(): Promise<void> {
-        this.log.info("Open login pgae");
+        this.log.info("Open login page");
         await this.goto(LoginPage.PATH);
     }
 
@@ -47,6 +47,11 @@ export class LoginPage extends BasePage {
 
     async waitForLoginButtonHidden(): Promise<void> {
         await this.el.waitForHidden(this.loginButton);
+    }
+
+    async expectErrorContains(text: string): Promise<void> {
+        await expect(this.errorBox).toBeVisible();
+        await expect(this.errorBox).toContainText(text);
     }
 
 }
