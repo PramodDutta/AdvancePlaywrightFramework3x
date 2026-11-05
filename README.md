@@ -27,7 +27,7 @@ AdvancePlaywrightFramework3x
 │   ├── fixtures/    → test-base.ts: page-object and login-state fixtures
 │   ├── pages/       → BasePage + 7 TTACart page objects (login to checkout complete)
 │   ├── testdata/    → Test data files (logintestdata.json: the six TTACart users)
-│   ├── tests/       → Test cases (*.spec.ts), e2e/ for full checkout journeys
+│   ├── tests/       → Test cases (*.spec.ts), e2e/ for full checkout journeys, apiTests/ for API specs
 │   └── utils/       → UtilElementLocator, logger, reporter, DataGenerator, visualSteps, data readers
 ├── docs/
 ├── rules/
@@ -64,6 +64,8 @@ npx playwright test --ui                     # interactive UI mode
 npx playwright test --debug                  # step through with the inspector
 
 ATTACH_SCREENSHOTS=true npx playwright test src/tests/e2e   # e2e specs with step screenshots
+
+BASE_URL=https://restful-booker.herokuapp.com npx playwright test src/tests/apiTests   # API specs
 ```
 
 The e2e specs in [src/tests/e2e/](src/tests/e2e/) all run the same TTACart checkout, each showing a different technique:
@@ -74,6 +76,18 @@ The e2e specs in [src/tests/e2e/](src/tests/e2e/) all run the same TTACart check
 | [e2e-checkout-with-visualStep.spec.ts](src/tests/e2e/e2e-checkout-with-visualStep.spec.ts) | One `visualStep` per page, login included |
 | [e2e-checkout_validFixture.spec.ts](src/tests/e2e/e2e-checkout_validFixture.spec.ts) | `validLogin` and `invalidLogin` state fixtures |
 | [e2e-checkout_validFixture_PonyTail_Review.spec.ts](src/tests/e2e/e2e-checkout_validFixture_PonyTail_Review.spec.ts) | The validFixture spec after a readability pass |
+
+The API specs in [src/tests/apiTests/01_restfulbooker_raw/](src/tests/apiTests/01_restfulbooker_raw/) call REST APIs directly, with no browser:
+
+| Spec | Shows |
+|---|---|
+| [01_basic_ping.spec.ts](src/tests/apiTests/01_restfulbooker_raw/01_basic_ping.spec.ts) | `GET /ping` and a status check |
+| [02_post_operation.spec.ts](src/tests/apiTests/01_restfulbooker_raw/02_post_operation.spec.ts) | `POST /booking` with headers and a payload |
+| [03_newContext_api.spec.ts](src/tests/apiTests/01_restfulbooker_raw/03_newContext_api.spec.ts) | `request.newContext()` with its own base URL and headers |
+| [04_put_operation.spec.ts](src/tests/apiTests/01_restfulbooker_raw/04_put_operation.spec.ts) | Token, then booking, then `PUT /booking/{id}` in `test.step` blocks |
+| [06_put_operation_negative_scenario.spec.ts](src/tests/apiTests/01_restfulbooker_raw/06_put_operation_negative_scenario.spec.ts) | PUT rejected: no token, invalid token, unknown booking id, missing field |
+
+> **`npx playwright test` also picks up these specs.** Most of them use relative paths such as `/booking`, so they fail unless `BASE_URL` points at restful-booker. See [08: Raw API tests](#08-raw-api-tests).
 
 Default run settings (see [playwright.config.ts](playwright.config.ts)):
 
@@ -531,6 +545,51 @@ export const credentials = {
 await loginPage.loginAs(credentials.standardUser, credentials.password);
 const customer = DataGenerator.checkoutCustomer();   // { firstName, lastName, postalCode }
 await checkoutStepOnePage.fillGuest(customer);
+```
+
+### 08: Raw API tests
+
+**Concept:** The specs in [01_restfulbooker_raw/](src/tests/apiTests/01_restfulbooker_raw/) call the restful-booker REST API through Playwright's built-in `request` fixture, with no browser, page objects or API client class.
+
+**Why:** API calls run in about a second, and writing each request out in the spec shows exactly what is sent and what comes back.
+
+**Q&A: why use this?**
+- **Q: How do I point the specs at restful-booker?** A: Set `BASE_URL` on the command line, because the specs use relative paths such as `/booking`. `TTA_ENV=api` only works when `BASE_URL` is empty in `.env`, since `resolveBaseURL()` checks `BASE_URL` first.
+- **Q: How does the token reach the PUT request?** A: `POST /auth` returns it in the response body, and the PUT sends it as a `Cookie: token=...` header. Without a valid token the API answers 403.
+- **Q: What's the gotcha?** A: This API's status codes are unusual: `/ping` returns 201, and a PUT to a booking that does not exist returns 405, not 404. The specs assert what the API returns today.
+
+```mermaid
+sequenceDiagram
+    participant S as Spec (request fixture)
+    participant A as restful-booker
+    S->>A: POST /auth (username, password)
+    A-->>S: 200 and token
+    S->>A: POST /booking (payload)
+    A-->>S: 200 and bookingid
+    S->>A: PUT /booking/id with token cookie
+    A-->>S: 200 and updated booking
+    S->>A: PUT /booking/id with no token or an invalid token
+    A-->>S: 403 Forbidden
+```
+
+```ts
+// src/tests/apiTests/01_restfulbooker_raw/04_put_operation.spec.ts
+const responseData = await request.put(`/booking/${bookingId}`, {
+    headers: {
+        ...headers,
+        Cookie: `token=${token}`,
+    },
+    data: payload,
+});
+const data = await responseData.json();
+expect(data.firstname).toBe(payload.firstname);
+
+// src/tests/apiTests/01_restfulbooker_raw/06_put_operation_negative_scenario.spec.ts
+const responseData = await request.put(`/booking/${bookingId}`, {
+    headers,
+    data: payload,
+});
+expect(responseData.status()).toBe(403);
 ```
 
 ## Writing tests
