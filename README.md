@@ -22,13 +22,13 @@ Built by [The Testing Academy](https://thetestingacademy.com).
 AdvancePlaywrightFramework3x
 ├── src/
 │   ├── ai/          → AI helpers used by the TTA report (RCA, flaky analysis)
-│   ├── api/         → API clients
+│   ├── api/         → BookingApi: restful-booker service object with managed auth token
 │   ├── config/      → env.ts (reads .env), credentials.ts (TTACart login)
-│   ├── fixtures/    → test-base.ts: page-object and login-state fixtures
+│   ├── fixtures/    → test-base.ts: page-object and login-state fixtures; booker.fixture.ts: BookingApi and token
 │   ├── pages/       → BasePage + 7 TTACart page objects (login to checkout complete)
-│   ├── testdata/    → Test data files (logintestdata.json: the six TTACart users)
+│   ├── testdata/    → Test data files (logintestdata.json: the six TTACart users; booking.data.ts: random bookings)
 │   ├── tests/       → Test cases (*.spec.ts), e2e/ for full checkout journeys, apiTests/ for API specs
-│   └── utils/       → UtilElementLocator, logger, reporter, DataGenerator, visualSteps, data readers
+│   └── utils/       → UtilElementLocator, logger, reporter, DataGenerator, visualSteps, ApiHelper, data readers
 ├── docs/
 ├── rules/
 ├── learnings/       → Notes on non-obvious problems and how they were solved
@@ -85,9 +85,23 @@ The API specs in [src/tests/apiTests/01_restfulbooker_raw/](src/tests/apiTests/0
 | [02_post_operation.spec.ts](src/tests/apiTests/01_restfulbooker_raw/02_post_operation.spec.ts) | `POST /booking` with headers and a payload |
 | [03_newContext_api.spec.ts](src/tests/apiTests/01_restfulbooker_raw/03_newContext_api.spec.ts) | `request.newContext()` with its own base URL and headers |
 | [04_put_operation.spec.ts](src/tests/apiTests/01_restfulbooker_raw/04_put_operation.spec.ts) | Token, then booking, then `PUT /booking/{id}` in `test.step` blocks |
+| [05_crud.spec.ts](src/tests/apiTests/01_restfulbooker_raw/05_crud.spec.ts) | Token, create, update as a `test.describe.serial` flow, with the login read from `process.env` |
 | [06_put_operation_negative_scenario.spec.ts](src/tests/apiTests/01_restfulbooker_raw/06_put_operation_negative_scenario.spec.ts) | PUT rejected: no token, invalid token, unknown booking id, missing field |
 
-> **`npx playwright test` also picks up these specs.** Most of them use relative paths such as `/booking`, so they fail unless `BASE_URL` points at restful-booker. See [08: Raw API tests](#08-raw-api-tests).
+The specs in [src/tests/apiTests/02_restfulbooker_apiHelper/](src/tests/apiTests/02_restfulbooker_apiHelper/) make the same calls through [ApiHelper](#09-apihelper):
+
+| Spec | Shows |
+|---|---|
+| [create-booking.spec.ts](src/tests/apiTests/02_restfulbooker_apiHelper/create-booking.spec.ts) | `api.post` and typed parsing, with logged `test.step` blocks |
+| [update-booking.spec.ts](src/tests/apiTests/02_restfulbooker_apiHelper/update-booking.spec.ts) | Token, create, then `api.put` with a `Cookie` header |
+
+The spec in [src/tests/apiTests/03_restfulbooker_fixture_e2e/](src/tests/apiTests/03_restfulbooker_fixture_e2e/) runs the full lifecycle through [BookingApi and its fixture](#10-bookingapi-service-and-fixture):
+
+| Spec | Shows |
+|---|---|
+| [booking-crud.e2e.spec.ts](src/tests/apiTests/03_restfulbooker_fixture_e2e/booking-crud.e2e.spec.ts) | Create, update, read back, delete, then confirm a 404 |
+
+> **`npx playwright test` also picks up these specs.** The specs in `01_restfulbooker_raw/` and `02_restfulbooker_apiHelper/` mostly use relative paths such as `/booking`, so they fail unless `BASE_URL` points at restful-booker. The `03_restfulbooker_fixture_e2e/` spec does not need it, because `BookingApi` defaults to the full restful-booker URL. See [08: Raw API tests](#08-raw-api-tests).
 
 Default run settings (see [playwright.config.ts](playwright.config.ts)):
 
@@ -124,6 +138,7 @@ TTA_ENV=stg npx playwright test
 | `TTA_ENV`, `BASE_URL`, `*_BASE_URL` | Base URL selection (above) |
 | `TEST_ENV`, `TEST_AUTHOR` | Shown in the TTA report header |
 | `STANDARD_USER`, `TTA_SECRET` | TTACart login in [credentials.ts](src/config/credentials.ts); blank uses `standard_user` / `tta_secret` |
+| `BOOKER_USERNAME`, `BOOKER_PASSWORD` | Restful Booker `/auth` login for [05_crud.spec.ts](src/tests/apiTests/01_restfulbooker_raw/05_crud.spec.ts); no default, so they must be set |
 | `ATTACH_SCREENSHOTS` | `true` attaches a screenshot to every `visualStep()` |
 | `CHECKOUT_FIRST_NAME`, `CHECKOUT_LAST_NAME`, `CHECKOUT_POSTAL_CODE` | Optional fixed customer for `DataGenerator.checkoutCustomerFromEnv()` |
 | `LOG_LEVEL` | Logging verbosity |
@@ -185,6 +200,8 @@ flowchart TD
     class P,B pom
     class E,L,G,PW,W util
 ```
+
+API specs take a parallel path with no browser: raw `request` calls ([08](#08-raw-api-tests)), then [ApiHelper](#09-apihelper) ([09](#09-apihelper)), then the [BookingApi service and fixture](#10-bookingapi-service-and-fixture) ([10](#10-bookingapi-service-and-fixture)).
 
 ### 01: BasePage
 
@@ -590,6 +607,120 @@ const responseData = await request.put(`/booking/${bookingId}`, {
     data: payload,
 });
 expect(responseData.status()).toBe(403);
+```
+
+### 09: ApiHelper
+
+**Concept:** [ApiHelper](src/utils/ApiHelper.ts) is a small generic class that wraps Playwright's HTTP calls behind `get`, `post`, `put`, `patch` and `delete`, with helpers to parse JSON and check the status. It knows nothing about bookings, so any spec can use it.
+
+**Why:** Raw specs repeat the same request, status check and `response.json()` lines, and one class gives that code a single home.
+
+**Q&A: why use this?**
+- **Q: What do I pass to the constructor?** A: Either the `request` fixture or a `page`. With a `page` it sends through `page.request`, which shares the browser's cookies.
+- **Q: How do I poll until the API is ready?** A: Call `callApiWithRetry(options, { condition, pollingInterval, retryCount })`. It repeats the call until `condition` returns true, by default up to 3 times, 5 seconds apart.
+- **Q: What's the gotcha?** A: `callApiWithRetry` returns the last response when the condition never passes, rather than throwing, so the spec still has to assert on the result.
+
+```mermaid
+flowchart LR
+    S["Spec"] --> V["get, post, put,<br/>patch, delete"]
+    V --> C["callApi(options)"]
+    C --> R["getRequest()<br/>request fixture or page.request"]
+    C --> U["buildUrl(url, params)"]
+    R --> A["restful-booker"]
+    U --> A
+    A --> H["parseJsonResponse, isSuccess,<br/>isFailureClient"]
+    H --> S
+
+    classDef spec fill:#e8f0fe,stroke:#1a73e8,color:#0b2a5b
+    classDef pom fill:#e6f4ea,stroke:#1e8e3e,color:#0d3b1e
+    classDef util fill:#fef7e0,stroke:#f9ab00,color:#4a3500
+    class S spec
+    class V,C,R,U,H pom
+    class A util
+```
+
+```ts
+// src/tests/apiTests/02_restfulbooker_apiHelper/update-booking.spec.ts
+const api = new ApiHelper(request);
+
+const authRes = await api.post('/auth', { username: 'admin', password: 'password123' });
+const { token } = await api.parseJsonResponse<{ token: string }>(authRes);
+
+const response = await api.put(
+    `/booking/${bookingid}`,
+    {
+        firstname: 'After',
+        lastname: 'Helper',
+        totalprice: 880,
+        depositpaid: true,
+        bookingdates: { checkin: '2026-05-02', checkout: '2026-05-09' },
+        additionalneeds: 'Extra bed',
+    },
+    { headers: { Cookie: `token=${token}` } },
+);
+expect(api.isSuccess(response)).toBe(true);
+```
+
+### 10: BookingApi service and fixture
+
+**Concept:** [BookingApi](src/api/BookingApi.ts) is a service object for restful-booker, built on `ApiHelper`, with typed methods such as `createBooking` and `updateBooking`. [booker.fixture.ts](src/fixtures/booker.fixture.ts) hands a ready instance to each test, and [booking.data.ts](src/testdata/booking.data.ts) builds random payloads through `DataGenerator`.
+
+**Why:** Specs read as booking steps, while URLs, headers and auth tokens stay in one class.
+
+**Q&A: why use this?**
+- **Q: Do I need to pass a token?** A: No. Leave it out and `BookingApi` gets one from `/auth`, caches it, and on a 403 re-authenticates once and retries. Ask for the `bookerToken` fixture only when you want the token value itself.
+- **Q: How do I test a rejected request?** A: Use a `...Response` method such as `updateBookingResponse`, which returns the raw response for you to assert on, and pass an explicit token. An explicit token goes out as-is, with no retry.
+- **Q: What's the gotcha?** A: `/auth` answers bad credentials with 200 and `{ reason: "Bad credentials" }`, so `auth()` checks the body for a token. `DELETE` also returns 201, not 204.
+
+```mermaid
+sequenceDiagram
+    participant S as Spec
+    participant F as booker.fixture
+    participant B as BookingApi
+    participant A as restful-booker
+    S->>F: ask for bookingApi
+    F-->>S: new BookingApi(request)
+    S->>B: updateBooking(id, payload)
+    B->>A: POST /auth (first use, then cached)
+    A-->>B: token
+    B->>A: PUT /booking/id with token cookie
+    A-->>B: 200, or 403 if the token is rejected
+    opt On a 403
+        B->>A: POST /auth, then PUT again once
+        A-->>B: 200 and updated booking
+    end
+    B-->>S: updated Booking
+```
+
+```ts
+// src/tests/apiTests/03_restfulbooker_fixture_e2e/booking-crud.e2e.spec.ts
+import { test, expect } from '@fixtures/booker.fixture';
+import { buildBookingFromGenerator } from '@testdata/booking.data';
+
+test.describe.serial('@e2e @P0 Level 3 - Booking lifecycle (token from fixture)', () => {
+    let bookingId: number;
+
+    test('create a booking', async ({ bookingApi }) => {
+        const { bookingid, booking } = await bookingApi.createBooking(
+            buildBookingFromGenerator({ firstname: 'E2E', lastname: 'Journey' }),
+        );
+        expect(booking.firstname).toBe('E2E');
+        bookingId = bookingid;
+    });
+
+    test('update the booking, then read it back', async ({ bookingApi }) => {
+        const updated = await bookingApi.updateBooking(
+            bookingId,
+            buildBookingFromGenerator({ firstname: 'E2E', lastname: 'Updated', totalprice: 950 }),
+        );
+        expect(updated).toMatchObject({ lastname: 'Updated', totalprice: 950 });
+    });
+
+    test('delete the booking and confirm it is gone', async ({ bookingApi }) => {
+        expect(await bookingApi.deleteBooking(bookingId)).toBe(201); // booker returns 201, not 204
+        expect((await bookingApi.getBookingResponse(bookingId)).status()).toBe(404);
+    });
+});
 ```
 
 ## Writing tests
