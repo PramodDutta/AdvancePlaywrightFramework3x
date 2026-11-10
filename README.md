@@ -14,6 +14,7 @@ Built by [The Testing Academy](https://thetestingacademy.com).
 | Logging | `winston` (console + `logs/combined.log`) |
 | Reporting | TTA custom reporter, Playwright HTML report |
 | Test data | CSV, YAML, Excel (`exceljs`), MySQL (`mysql2`), `@faker-js/faker` |
+| API assertions | `jsonpath-plus` (JSONPath), `ajv` + `ajv-formats` (JSON Schema) |
 | CI | GitHub Actions |
 
 ## Folder structure
@@ -26,7 +27,7 @@ AdvancePlaywrightFramework3x
 │   ├── config/      → env.ts (reads .env), credentials.ts (TTACart login)
 │   ├── fixtures/    → test-base.ts: page-object and login-state fixtures; booker.fixture.ts: BookingApi and token
 │   ├── pages/       → BasePage + 7 TTACart page objects (login to checkout complete)
-│   ├── testdata/    → Test data files (logintestdata.json: the six TTACart users; booking.data.ts: random bookings)
+│   ├── testdata/    → Test data files (logintestdata.json: the six TTACart users; booking.data.ts: random bookings; jsonschema/: AJV schemas)
 │   ├── tests/       → Test cases (*.spec.ts), e2e/ for full checkout journeys, apiTests/ for API specs
 │   └── utils/       → UtilElementLocator, logger, reporter, DataGenerator, visualSteps, ApiHelper, data readers
 ├── docs/
@@ -95,13 +96,21 @@ The specs in [src/tests/apiTests/02_restfulbooker_apiHelper/](src/tests/apiTests
 | [create-booking.spec.ts](src/tests/apiTests/02_restfulbooker_apiHelper/create-booking.spec.ts) | `api.post` and typed parsing, with logged `test.step` blocks |
 | [update-booking.spec.ts](src/tests/apiTests/02_restfulbooker_apiHelper/update-booking.spec.ts) | Token, create, then `api.put` with a `Cookie` header |
 
-The spec in [src/tests/apiTests/03_restfulbooker_fixture_e2e/](src/tests/apiTests/03_restfulbooker_fixture_e2e/) runs the full lifecycle through [BookingApi and its fixture](#10-bookingapi-service-and-fixture):
+The specs in [src/tests/apiTests/03_restfulbooker_fixture_e2e/](src/tests/apiTests/03_restfulbooker_fixture_e2e/) run the full lifecycle through [BookingApi and its fixture](#10-bookingapi-service-and-fixture):
 
 | Spec | Shows |
 |---|---|
 | [booking-crud.e2e.spec.ts](src/tests/apiTests/03_restfulbooker_fixture_e2e/booking-crud.e2e.spec.ts) | Create, update, read back, delete, then confirm a 404 |
+| [booking-crud.e2e_PonyTail_Review.spec.ts](src/tests/apiTests/03_restfulbooker_fixture_e2e/booking-crud.e2e_PonyTail_Review.spec.ts) | The lifecycle spec after a readability pass: one payload per test, `toEqual` on the whole booking |
 
-> **`npx playwright test` also picks up these specs.** The specs in `01_restfulbooker_raw/` and `02_restfulbooker_apiHelper/` mostly use relative paths such as `/booking`, so they fail unless `BASE_URL` points at restful-booker. The `03_restfulbooker_fixture_e2e/` spec does not need it, because `BookingApi` defaults to the full restful-booker URL. See [08: Raw API tests](#08-raw-api-tests).
+The next two folders check the create-booking response in more detail:
+
+| Spec | Shows |
+|---|---|
+| [04_jsonpathplus/booking-crud.e2e.spec.ts](src/tests/apiTests/04_jsonpathplus/booking-crud.e2e.spec.ts) | Each booking field read by its JSONPath, see [11](#11-jsonpath-field-checks) |
+| [05_ajv_jsonschema_validator/booking-crud.e2e.spec.ts](src/tests/apiTests/05_ajv_jsonschema_validator/booking-crud.e2e.spec.ts) | The response validated against a JSON Schema with AJV, then the same JSONPath checks, see [12](#12-json-schema-validation-ajv) |
+
+> **`npx playwright test` also picks up these specs.** The specs in `01_restfulbooker_raw/` and `02_restfulbooker_apiHelper/` mostly use relative paths such as `/booking`, so they fail unless `BASE_URL` points at restful-booker. The specs in `03_`, `04_` and `05_` do not need it, because they go through `BookingApi`, which defaults to the full restful-booker URL. See [08: Raw API tests](#08-raw-api-tests).
 
 Default run settings (see [playwright.config.ts](playwright.config.ts)):
 
@@ -201,7 +210,7 @@ flowchart TD
     class E,L,G,PW,W util
 ```
 
-API specs take a parallel path with no browser: raw `request` calls ([08](#08-raw-api-tests)), then [ApiHelper](#09-apihelper) ([09](#09-apihelper)), then the [BookingApi service and fixture](#10-bookingapi-service-and-fixture) ([10](#10-bookingapi-service-and-fixture)).
+API specs take a parallel path with no browser: raw `request` calls ([08](#08-raw-api-tests)), then [ApiHelper](#09-apihelper) ([09](#09-apihelper)), then the [BookingApi service and fixture](#10-bookingapi-service-and-fixture) ([10](#10-bookingapi-service-and-fixture)). Responses are then checked field by field with [JSONPath](#11-jsonpath-field-checks) ([11](#11-jsonpath-field-checks)) and as a whole against a [JSON Schema](#12-json-schema-validation-ajv) ([12](#12-json-schema-validation-ajv)).
 
 ### 01: BasePage
 
@@ -722,6 +731,106 @@ test.describe.serial('@e2e @P0 Level 3 - Booking lifecycle (token from fixture)'
     });
 });
 ```
+
+### 11: JSONPath field checks
+
+**Concept:** [jsonpath-plus](https://github.com/JSONPath-Plus/JSONPath) reads a value out of JSON with a path string such as `$.booking.bookingdates.checkin`, the way XPath reads XML. The spec in [04_jsonpathplus/](src/tests/apiTests/04_jsonpathplus/) checks every field of the create-booking response by its path.
+
+**Why:** A path names the exact field under test, which keeps assertions readable on deep, nested responses.
+
+**Q&A: why use this?**
+- **Q: Why does my path return `[]`?** A: The path starts from whatever you pass as `json`. The spec passes the whole response `{ bookingid, booking }`, so paths begin with `$.booking`. Passing `booking` itself and asking for `$.booking.firstname` finds nothing.
+- **Q: Why `wrap: false`?** A: JSONPath returns an array of matches by default, so `toBe('E2E')` fails against `['E2E']`. With `wrap: false` a single match comes back as the value itself.
+- **Q: When is it better than `response.booking.firstname`?** A: When the shape is deep or varies. Recursive paths such as `$..firstname` and filters such as `$.items[?(@.price > 100)]` replace loops. For one fixed field, plain property access is just as good.
+
+```mermaid
+flowchart LR
+    R["response"] --> I["bookingid"]
+    R --> B["booking"]
+    B --> F["firstname"]
+    B --> O["lastname, totalprice,<br/>depositpaid, additionalneeds"]
+    B --> D["bookingdates"]
+    D --> CI["checkin"]
+    D --> CO["checkout"]
+    P1["$.booking.firstname"] -.->|picks| F
+    P2["$.booking.bookingdates.checkin"] -.->|picks| CI
+
+    classDef spec fill:#e8f0fe,stroke:#1a73e8,color:#0b2a5b
+    classDef pom fill:#e6f4ea,stroke:#1e8e3e,color:#0d3b1e
+    classDef util fill:#fef7e0,stroke:#f9ab00,color:#4a3500
+    class R,B,D pom
+    class I,F,O,CI,CO spec
+    class P1,P2 util
+```
+
+```ts
+// src/tests/apiTests/04_jsonpathplus/booking-crud.e2e.spec.ts
+const payload = buildBookingFromGenerator({ firstname: 'E2E', lastname: 'Journey' });
+const response = await bookingApi.createBooking(payload);
+
+const firstname = JSONPath({ path: '$.booking.firstname', json: response, wrap: false });
+const totalprice = JSONPath({ path: '$.booking.totalprice', json: response, wrap: false });
+const checkin = JSONPath({ path: '$.booking.bookingdates.checkin', json: response, wrap: false });
+
+expect(firstname).toBe(payload.firstname);
+expect(totalprice).toBe(payload.totalprice);
+expect(checkin).toBe(payload.bookingdates.checkin);
+```
+
+### 12: JSON Schema validation (AJV)
+
+**Concept:** [AJV](https://ajv.js.org/) checks a JSON response against a JSON Schema: which fields must exist, their types, formats such as dates, and whether extra fields are allowed. The schema lives in [src/testdata/jsonschema/create-booking.schema.json](src/testdata/jsonschema/create-booking.schema.json), apart from the spec.
+
+**Why:** Value checks confirm that what you sent came back; a schema check also catches a changed contract, such as a renamed field or a number turned into a string, on fields you never assert on.
+
+**Q&A: why use this?**
+- **Q: What does this schema enforce?** A: `bookingid` is an integer of at least 1. `booking` has non-empty names, a numeric `totalprice`, a boolean `depositpaid`, `YYYY-MM-DD` dates and an optional `additionalneeds`, and `additionalProperties: false` rejects any field it does not list.
+- **Q: Why `allErrors` and `ajv-formats`?** A: `allErrors: true` reports every broken field in one run instead of only the first. AJV 8 ships no formats, so without `ajv-formats` compiling the schema throws `unknown format "date"`.
+- **Q: What's the gotcha?** A: Pass AJV's error text as the assertion message. A bare `expect(isValid).toBe(true)` fails with "expected true, received false" and no hint of which field broke.
+
+```mermaid
+flowchart LR
+    S["create-booking.schema.json"] -->|ajv.compile, once per file| V["validateCreateBooking()"]
+    R["POST /booking response"] --> V
+    V -->|true| OK["value checks run next"]
+    V -->|false| E["ajv.errorsText(errors)<br/>data/booking/totalprice must be number"]
+
+    classDef spec fill:#e8f0fe,stroke:#1a73e8,color:#0b2a5b
+    classDef pom fill:#e6f4ea,stroke:#1e8e3e,color:#0d3b1e
+    classDef util fill:#fef7e0,stroke:#f9ab00,color:#4a3500
+    class S,R spec
+    class V,OK pom
+    class E util
+```
+
+```ts
+// src/tests/apiTests/05_ajv_jsonschema_validator/booking-crud.e2e.spec.ts
+import Ajv from 'ajv';
+import addFormats from 'ajv-formats';
+import createBookingSchema from '@testdata/jsonschema/create-booking.schema.json';
+
+const ajv = new Ajv({ allErrors: true });
+addFormats(ajv);
+const validateCreateBooking = ajv.compile(createBookingSchema);
+
+// inside the test
+const response = await bookingApi.createBooking(payload);
+const isValid = validateCreateBooking(response);
+expect(isValid, ajv.errorsText(validateCreateBooking.errors)).toBe(true);
+```
+
+A broken response fails with every problem listed at once:
+
+```
+data/booking must have required property 'lastname', data/booking must NOT have additional properties,
+data/booking/totalprice must be number, data/booking/bookingdates/checkin must match format "date"
+```
+
+| Check | Catches | Use it when |
+|---|---|---|
+| `toEqual(payload)` | Any value that differs from what you sent | You know the whole expected object |
+| JSONPath | One named field's value | The response is deep, or you only care about some fields |
+| AJV schema | Missing or extra fields, wrong types, bad formats | You want to guard the contract, including fields you never assert on |
 
 ## Writing tests
 
