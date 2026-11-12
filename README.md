@@ -15,6 +15,7 @@ Built by [The Testing Academy](https://thetestingacademy.com).
 | Reporting | TTA custom reporter, Playwright HTML report |
 | Test data | CSV, YAML, Excel (`exceljs`), MySQL (`mysql2`), `@faker-js/faker` |
 | API assertions | `jsonpath-plus` (JSONPath), `ajv` + `ajv-formats` (JSON Schema) |
+| LLM | `LLMGateway` over Groq, OpenRouter, OpenAI, Anthropic, DeepSeek (built-in `fetch`, no SDKs) |
 | CI | GitHub Actions |
 
 ## Folder structure
@@ -22,13 +23,13 @@ Built by [The Testing Academy](https://thetestingacademy.com).
 ```
 AdvancePlaywrightFramework3x
 ├── src/
-│   ├── ai/          → AI helpers used by the TTA report (RCA, flaky analysis)
+│   ├── ai/          → LLMGateway (Groq, OpenRouter, OpenAI, Claude, DeepSeek), prompts/, and the report's RCA and flaky agents
 │   ├── api/         → BookingApi: restful-booker service object with managed auth token
 │   ├── config/      → env.ts (reads .env), credentials.ts (TTACart login)
 │   ├── fixtures/    → test-base.ts: page-object and login-state fixtures; booker.fixture.ts: BookingApi and token
 │   ├── pages/       → BasePage + 7 TTACart page objects (login to checkout complete)
 │   ├── testdata/    → Test data files (logintestdata.json: the six TTACart users; booking.data.ts: random bookings; jsonschema/: AJV schemas)
-│   ├── tests/       → Test cases (*.spec.ts), e2e/ for full checkout journeys, apiTests/ for API specs
+│   ├── tests/       → Test cases (*.spec.ts), e2e/ for full checkout journeys, apiTests/ for API specs, aiTests/ for LLM-backed specs
 │   └── utils/       → UtilElementLocator, logger, reporter, DataGenerator, visualSteps, ApiHelper, data readers
 ├── docs/
 ├── rules/
@@ -67,6 +68,8 @@ npx playwright test --debug                  # step through with the inspector
 ATTACH_SCREENSHOTS=true npx playwright test src/tests/e2e   # e2e specs with step screenshots
 
 BASE_URL=https://restful-booker.herokuapp.com npx playwright test src/tests/apiTests   # API specs
+
+npx playwright test src/tests/aiTests --project=chromium   # LLM specs (need an LLM key in .env)
 ```
 
 The e2e specs in [src/tests/e2e/](src/tests/e2e/) all run the same TTACart checkout, each showing a different technique:
@@ -152,6 +155,9 @@ TTA_ENV=stg npx playwright test
 | `CHECKOUT_FIRST_NAME`, `CHECKOUT_LAST_NAME`, `CHECKOUT_POSTAL_CODE` | Optional fixed customer for `DataGenerator.checkoutCustomerFromEnv()` |
 | `LOG_LEVEL` | Logging verbosity |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` | Optional, enables the AI Verdict tab |
+| `LLM_PROVIDER`, `LLM_ALLOWED_PROVIDERS` | Which LLM the [LLMGateway](src/ai/LLMGateway.ts) calls, and the company allowlist |
+| `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | LLM keys; set only the ones you use. `<PROVIDER>_MODEL` overrides the default model |
+| `LLM_TIMEOUT_MS`, `LLM_MAX_RETRIES` | Optional, gateway timeout (default 60000) and retries (default 2) |
 | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE` | Optional, MySQL data-driven tests |
 
 > **Why `STANDARD_USER` and not `USERNAME`:** Windows always sets `USERNAME` to your login name, and dotenv does not overwrite variables that already exist, so a `USERNAME` in `.env` is silently ignored on Windows.
@@ -831,6 +837,69 @@ data/booking/totalprice must be number, data/booking/bookingdates/checkin must m
 | `toEqual(payload)` | Any value that differs from what you sent | You know the whole expected object |
 | JSONPath | One named field's value | The response is deep, or you only care about some fields |
 | AJV schema | Missing or extra fields, wrong types, bad formats | You want to guard the contract, including fields you never assert on |
+
+### 13: LLM Gateway and AI test data
+
+**Concept:** [LLMGateway.ts](src/ai/LLMGateway.ts) is one class that sends a prompt to whichever LLM provider your company allows (Groq, OpenRouter, OpenAI, Anthropic Claude or DeepSeek) and gives back parsed JSON, or writes it to a file. [DataGenerator.checkoutCustomerAI()](src/utils/DataGenerator.ts) uses it to create the checkout customer in [e2e-checkout_DataGenAI.spec.ts](src/tests/aiTests/e2e-checkout_DataGenAI.spec.ts), with its prompt kept in [src/ai/prompts/](src/ai/prompts/checkoutCustomer.prompt.md).
+
+**Why:** Teams get approval for different providers, so a test should ask for "an LLM" and let `.env` decide which one, instead of each test speaking one vendor's API.
+
+**Q&A: why use this?**
+- **Q: How do I pick a provider?** A: Set `LLM_PROVIDER=groq` (or `openrouter`, `openai`, `anthropic`, `deepseek`) and its `*_API_KEY`. With `LLM_PROVIDER` empty, the first provider that has a key is used, free ones first. `LLM_ALLOWED_PROVIDERS=groq,openrouter` makes the gateway refuse any provider your company has not approved.
+- **Q: What if the model wraps the JSON in markdown or adds a sentence?** A: `askJson()` asks for JSON only, uses the provider's JSON mode where it is reliable, and then pulls the first valid JSON block out of the reply. If there is none, it throws `LLMGatewayError` with the raw reply attached.
+- **Q: What's the gotcha?** A: The same prompt gives the same answer, even at temperature 1: three calls once returned "Marisol, 63108" every time. The prompt has `{{FIRST_INITIAL}}`, `{{LAST_INITIAL}}` and `{{STATE}}` placeholders that Faker fills in before each call, so every customer is different. Also, the checkout test now fails if the LLM is unreachable; use `DataGenerator.checkoutCustomer()` where that is not acceptable.
+
+```mermaid
+flowchart LR
+    S["checkout spec"] --> D["DataGenerator.checkoutCustomerAI()"]
+    P["prompts/checkoutCustomer.prompt.md"] -->|placeholders filled by Faker| D
+    D --> G["LLMGateway.askJson()"]
+    E[".env: LLM_PROVIDER,<br/>LLM_ALLOWED_PROVIDERS, *_API_KEY"] --> G
+    G -->|"OpenAI-style /chat/completions"| O["Groq, OpenRouter,<br/>OpenAI, DeepSeek"]
+    G -->|"/v1/messages"| A["Anthropic Claude"]
+    O --> J["extractJson()"]
+    A --> J
+    J -->|"{ firstName, lastName, postalCode }"| F["checkoutStepOnePage.fillGuest()"]
+
+    classDef spec fill:#e8f0fe,stroke:#1a73e8,color:#0b2a5b
+    classDef pom fill:#e6f4ea,stroke:#1e8e3e,color:#0d3b1e
+    classDef util fill:#fef7e0,stroke:#f9ab00,color:#4a3500
+    class S,F spec
+    class D,G,J pom
+    class P,E,O,A util
+```
+
+```ts
+// src/utils/DataGenerator.ts
+static async checkoutCustomerAI(): Promise<CheckoutCustomer> {
+    const prompt = fs
+        .readFileSync(path.resolve(__dirname, '../ai/prompts/checkoutCustomer.prompt.md'), 'utf8')
+        .replace('{{FIRST_INITIAL}}', faker.string.alpha({ casing: 'upper' }))
+        .replace('{{LAST_INITIAL}}', faker.string.alpha({ casing: 'upper' }))
+        .replace('{{STATE}}', faker.location.state());
+    const { data } = await new LLMGateway().askJson<CheckoutCustomer>(prompt, { temperature: 1 });
+    // ...checks that firstName, lastName and postalCode are non-empty strings
+    return { firstName: data.firstName, lastName: data.lastName, postalCode: data.postalCode };
+}
+
+// src/tests/aiTests/e2e-checkout_DataGenAI.spec.ts
+await checkoutStepOnePage.fillGuest(await DataGenerator.checkoutCustomerAI());
+
+// Anywhere else: JSON back, or straight to a file
+const llm = new LLMGateway();                         // or new LLMGateway({ provider: 'groq' })
+const { data } = await llm.askJson<{ cases: string[] }>('Give 3 negative login test cases as {"cases": [...]}');
+await llm.askJsonToFile('...prompt...', 'reports/ai/login-cases.json');
+```
+
+| Provider | `LLM_PROVIDER` | Key | Default model | Cost |
+|---|---|---|---|---|
+| Groq | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | Free tier |
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `meta-llama/llama-3.3-70b-instruct:free` | Free `:free` models |
+| DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` | Paid, low cost |
+| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` | Paid |
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-5-5` | Paid |
+
+Override any model with `<PROVIDER>_MODEL`, for example `GROQ_MODEL=...`.
 
 ## Writing tests
 
