@@ -33,6 +33,7 @@ import { CheckoutStepTwoPage } from '@pages/CheckoutStepTwoPage';
 import { CheckoutCompletePage } from '@pages/CheckoutCompletePage';
 
 import loginTestData from '@testdata/logintestdata.json';
+import { healLocatorFailure } from '../ai/agents/selfHealAgent';
 
 
 type LoginRecord = {
@@ -77,6 +78,9 @@ export type TestFixture = {
     validLogin: LoginPage;
     loginWithInventory: InventoryPage;
     loginWithSelectedItem: SelectedItemState;
+
+    // Auto: after a locator failure, asks the Self-Healer agent for replacements (Self-Heal tab).
+    selfHealer: void;
 };
 
 export const test = base.extend<TestFixture>({
@@ -130,6 +134,11 @@ export const test = base.extend<TestFixture>({
         });
     },
 
+    // Runs for every test; only does work when the test failed on a locator.
+    selfHealer: [async ({ page }, use, testInfo) => {
+        await use();
+        await healLocatorFailure(page, testInfo);
+    }, { auto: true }],
 
 })
 

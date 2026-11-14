@@ -21,3 +21,6 @@ node_modules/
 
 # Logs (src/utils/logger.ts)
 /logs/
+
+# DeFlaky CLI local run output
+/.deflaky/

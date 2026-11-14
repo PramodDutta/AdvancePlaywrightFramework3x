@@ -1,22 +1,19 @@
 /**
- * LLM provider configuration.
+ * LLM provider configuration for the TTA report.
  *
  * The CustomReporter's AI features (RCA verdicts, flaky summaries) are all
- * gated on hasApiKey(). With no key set, the reporter still produces its full
- * HTML report and simply skips the AI sections.
+ * gated on hasApiKey(). It defers to the LLMGateway, so any provider the
+ * gateway supports and LLM_ALLOWED_PROVIDERS allows (Groq, OpenRouter,
+ * DeepSeek, OpenAI, Anthropic) turns them on. With no key set, the reporter
+ * still produces its full HTML report and simply skips the AI sections.
  */
 
-export type ProviderName = 'anthropic' | 'openai' | 'google';
+import { availableProviders, type LLMProvider } from '../LLMGateway';
 
-const KEY_ENV: Record<ProviderName, string> = {
-    anthropic: 'ANTHROPIC_API_KEY',
-    openai: 'OPENAI_API_KEY',
-    google: 'GOOGLE_API_KEY',
-};
+export type ProviderName = LLMProvider;
 
 export function activeProvider(): ProviderName | undefined {
-    return (Object.keys(KEY_ENV) as ProviderName[])
-        .find((p) => (process.env[KEY_ENV[p]] ?? '').trim().length > 0);
+    return availableProviders()[0];
 }
 
 export function hasApiKey(): boolean {

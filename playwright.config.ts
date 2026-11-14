@@ -49,6 +49,8 @@ export default defineConfig({
     ['html', { open: 'never' }],
     /* TTA custom report, written to tta-report/ (index.html always points to the latest run). */
     ['./src/utils/CustomReporter.ts'],
+    /* JSON results for the DeFlaky CLI, which scans test-results/ after each run. */
+    ['json', { outputFile: 'test-results/results.json' }],
   ],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {

@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
-  "scripts": {},
+  "scripts": {
+    "flaky": "node src/utils/deflakyRun.js"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",

@@ -869,6 +869,8 @@ class CustomTTAReporter implements Reporter {
         <p>Built with ❤️ by <a href="https://thetestingacademy.com" target="_blank">Pramod Dutta</a> | <a href="https://thetestingacademy.com" target="_blank">The Testing Academy</a></p>
     </footer>
 
+    <!-- Written by src/utils/deflakyRun.js (npm run flaky); missing file = no DeFlaky section. -->
+    <script src="deflaky-data.js"></script>
     <script>
         ${this.getScripts()}
     </script>
@@ -1025,8 +1027,13 @@ class CustomTTAReporter implements Reporter {
         }).join('')}</div>`;
     }
 
-    // Flaky tab body: build-vs-build counts, highlighted flaky tests, LLM summary.
+    // Flaky tab body: build-vs-build counts, highlighted flaky tests, LLM summary,
+    // then the DeFlaky section (filled in the browser from deflaky-data.js, see renderDeflaky).
     private generateFlakyTab(): string {
+        return this.generateBuildFlakySection() + '<div id="deflaky-panel"></div>';
+    }
+
+    private generateBuildFlakySection(): string {
         if (!this.flakyResult) {
             return `<div class="ai-empty">🔁 Flaky analysis needs two builds. Run the suite again to compare.</div>`;
         }
@@ -1419,6 +1426,16 @@ class CustomTTAReporter implements Reporter {
         .fc-label { font-size: 13px; color: #64748b; margin-top: 4px; }
         .flaky-list { display: flex; flex-direction: column; gap: 8px; }
         .flaky-item { background: #fffbeb; border: 1px solid #fcd34d; border-left: 4px solid #f59e0b; border-radius: 8px; padding: 10px 14px; font-weight: 500; color: #92400e; }
+        .deflaky-wrap { margin-top: 24px; padding-top: 20px; border-top: 1px dashed #cbd5e1; }
+        .deflaky-wrap code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+        .df-score-good { border-color: #10b981; background: #ecfdf5; }
+        .df-score-warn { border-color: #f59e0b; background: #fffbeb; }
+        .df-score-bad { border-color: #ef4444; background: #fef2f2; }
+        .deflaky-table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; font-size: 14px; }
+        .deflaky-table th, .deflaky-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        .deflaky-table th { background: #f8fafc; color: #475569; font-weight: 600; }
+        .deflaky-table tr.df-flaky td { background: #fffbeb; color: #92400e; }
+        .deflaky-table tr.df-failing td { background: #fef2f2; color: #991b1b; }
         .flaky-summary { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; color: #334155; line-height: 1.5; }
 
         :root {
@@ -2292,6 +2309,40 @@ class CustomTTAReporter implements Reporter {
                 }
             });
         }
+
+        // DeFlaky section of the Flaky tab, from window.DEFLAKY_DATA (tta-report/deflaky-data.js).
+        function renderDeflaky() {
+            var d = window.DEFLAKY_DATA, el = document.getElementById('deflaky-panel');
+            if (!d || !d.result || !el) return;
+            var r = d.result;
+            var esc = function (s) {
+                return String(s).replace(/[&<>"']/g, function (c) {
+                    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+                });
+            };
+            var band = r.flakeScore >= 95 ? 'good' : r.flakeScore >= 80 ? 'warn' : 'bad';
+            var rows = (r.details || []).slice()
+                .sort(function (a, b) { return a.passRate - b.passRate; })
+                .map(function (t) {
+                    var kind = t.passCount === 0 ? 'Failing' : t.failCount === 0 ? 'Stable' : 'Flaky';
+                    return '<tr class="df-' + kind.toLowerCase() + '"><td>' + esc(t.testName) + '</td><td>' + esc(t.filePath) +
+                        '</td><td>' + t.passRate + '%</td><td>' + t.passCount + ' / ' + t.totalRuns + '</td><td>' + kind + '</td></tr>';
+                }).join('');
+            el.innerHTML =
+                '<div class="flaky-wrap deflaky-wrap">' +
+                '<div class="ai-card-title">🧪 DeFlaky: ' + d.runs + ' runs of <code>' + esc(d.command) + '</code></div>' +
+                '<div class="flaky-compare">Run at ' + esc(new Date(d.date).toLocaleString()) + '</div>' +
+                '<div class="flaky-counts">' +
+                '<div class="flaky-count df-score-' + band + '"><div class="fc-num">' + r.flakeScore + '%</div><div class="fc-label">FlakeScore</div></div>' +
+                '<div class="flaky-count"><div class="fc-num">' + r.stableTests + '</div><div class="fc-label">Stable</div></div>' +
+                '<div class="flaky-count flaky"><div class="fc-num">' + r.flakyTests + '</div><div class="fc-label">Flaky</div></div>' +
+                '<div class="flaky-count fail"><div class="fc-num">' + r.failingTests + '</div><div class="fc-label">Failing</div></div>' +
+                '</div>' +
+                '<table class="deflaky-table"><thead><tr><th>Test</th><th>File</th><th>Pass rate</th><th>Passed</th><th>Verdict</th></tr></thead>' +
+                '<tbody>' + rows + '</tbody></table>' +
+                '</div>';
+        }
+        renderDeflaky();
 
         document.addEventListener('DOMContentLoaded', function() {
             const modal = document.getElementById('screenshotModal');

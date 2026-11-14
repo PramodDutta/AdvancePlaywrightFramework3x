@@ -15,7 +15,8 @@ Built by [The Testing Academy](https://thetestingacademy.com).
 | Reporting | TTA custom reporter, Playwright HTML report |
 | Test data | CSV, YAML, Excel (`exceljs`), MySQL (`mysql2`), `@faker-js/faker` |
 | API assertions | `jsonpath-plus` (JSONPath), `ajv` + `ajv-formats` (JSON Schema) |
-| LLM | `LLMGateway` over Groq, OpenRouter, OpenAI, Anthropic, DeepSeek (built-in `fetch`, no SDKs) |
+| LLM | `LLMGateway` over Groq, OpenRouter, OpenAI, Anthropic, DeepSeek (built-in `fetch`, no SDKs); `createAgent()` factory |
+| Flaky detection | [DeFlaky](https://deflaky.com) CLI (`deflaky`), plus the report's build-vs-build diff |
 | CI | GitHub Actions |
 
 ## Folder structure
@@ -23,7 +24,7 @@ Built by [The Testing Academy](https://thetestingacademy.com).
 ```
 AdvancePlaywrightFramework3x
 ├── src/
-│   ├── ai/          → LLMGateway (Groq, OpenRouter, OpenAI, Claude, DeepSeek), prompts/, and the report's RCA and flaky agents
+│   ├── ai/          → LLMGateway (Groq, OpenRouter, OpenAI, Claude, DeepSeek), agents/ (agentFactory + Test Data, RCA, Flaky, Self-Healer), prompts/
 │   ├── api/         → BookingApi: restful-booker service object with managed auth token
 │   ├── config/      → env.ts (reads .env), credentials.ts (TTACart login)
 │   ├── fixtures/    → test-base.ts: page-object and login-state fixtures; booker.fixture.ts: BookingApi and token
@@ -70,7 +71,10 @@ ATTACH_SCREENSHOTS=true npx playwright test src/tests/e2e   # e2e specs with ste
 BASE_URL=https://restful-booker.herokuapp.com npx playwright test src/tests/apiTests   # API specs
 
 npx playwright test src/tests/aiTests --project=chromium   # LLM specs (need an LLM key in .env)
+npm run flaky                                              # DeFlaky flake check, results in the Flaky tab
 ```
+
+> Don't add `--reporter=...` when you want the TTA report: it replaces the reporters in `playwright.config.ts`, and the TTA report is not written.
 
 The e2e specs in [src/tests/e2e/](src/tests/e2e/) all run the same TTACart checkout, each showing a different technique:
 
@@ -154,7 +158,8 @@ TTA_ENV=stg npx playwright test
 | `ATTACH_SCREENSHOTS` | `true` attaches a screenshot to every `visualStep()` |
 | `CHECKOUT_FIRST_NAME`, `CHECKOUT_LAST_NAME`, `CHECKOUT_POSTAL_CODE` | Optional fixed customer for `DataGenerator.checkoutCustomerFromEnv()` |
 | `LOG_LEVEL` | Logging verbosity |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` | Optional, enables the AI Verdict tab |
+| Any LLM key below | Optional, turns on the AI agents (AI Verdict, Self-Heal) |
+| `DEFLAKY_API_KEY` | DeFlaky project token, used by `npm run flaky` to push to the DeFlaky dashboard |
 | `LLM_PROVIDER`, `LLM_ALLOWED_PROVIDERS` | Which LLM the [LLMGateway](src/ai/LLMGateway.ts) calls, and the company allowlist |
 | `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | LLM keys; set only the ones you use. `<PROVIDER>_MODEL` overrides the default model |
 | `LLM_TIMEOUT_MS`, `LLM_MAX_RETRIES` | Optional, gateway timeout (default 60000) and retries (default 2) |
@@ -178,8 +183,12 @@ start tta-report/index.html       # Windows
 - `tta-report/index.html` always opens the **latest** run. `history.html` lists earlier runs.
 - Each test shows its steps, logs, screenshots, video and a downloadable trace.
 - The report refreshes itself every 5 seconds while tests are running.
-- **Flaky tab:** compares this run with the previous one (snapshots in `reports/runs/`), so it appears from the second run onwards.
-- **AI Verdict tab:** root-cause hints for failed tests, enabled when one of the AI API keys is set. The agent in [src/ai/agents/rcaAgent.ts](src/ai/agents/rcaAgent.ts) is currently heuristic; swap in a real LLM call when ready.
+- **AI Data tab:** JSON produced by the Test Data agent during the run.
+- **AI Verdict tab:** an LLM root-cause analysis for each failed test (RCA agent), with a heuristic fallback.
+- **Flaky tab:** compares this run with the previous one (snapshots in `reports/runs/`), so it appears from the second run onwards. After `npm run flaky`, it also shows the DeFlaky FlakeScore and the pass rate of each test.
+- **Self-Heal tab:** replacement locators for any locator failure, each verified on the live page (Self-Healer agent).
+
+The AI tabs need an LLM key in `.env`. See [section 14](#14-ai-agent-factory-and-the-four-agents).
 
 ### Playwright HTML report
 
@@ -870,16 +879,15 @@ flowchart LR
 ```
 
 ```ts
-// src/utils/DataGenerator.ts
+// src/utils/DataGenerator.ts (the agent itself is in section 14)
 static async checkoutCustomerAI(): Promise<CheckoutCustomer> {
-    const prompt = fs
-        .readFileSync(path.resolve(__dirname, '../ai/prompts/checkoutCustomer.prompt.md'), 'utf8')
-        .replace('{{FIRST_INITIAL}}', faker.string.alpha({ casing: 'upper' }))
-        .replace('{{LAST_INITIAL}}', faker.string.alpha({ casing: 'upper' }))
-        .replace('{{STATE}}', faker.location.state());
-    const { data } = await new LLMGateway().askJson<CheckoutCustomer>(prompt, { temperature: 1 });
-    // ...checks that firstName, lastName and postalCode are non-empty strings
-    return { firstName: data.firstName, lastName: data.lastName, postalCode: data.postalCode };
+    // Random placeholders stop the model returning the same person on every call.
+    const { firstName, lastName, postalCode } = await checkoutCustomerAgent.run({
+        FIRST_INITIAL: faker.string.alpha({ casing: 'upper' }),
+        LAST_INITIAL: faker.string.alpha({ casing: 'upper' }),
+        STATE: faker.location.state(),
+    });
+    return { firstName, lastName, postalCode };
 }
 
 // src/tests/aiTests/e2e-checkout_DataGenAI.spec.ts
@@ -900,6 +908,88 @@ await llm.askJsonToFile('...prompt...', 'reports/ai/login-cases.json');
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-5-5` | Paid |
 
 Override any model with `<PROVIDER>_MODEL`, for example `GROQ_MODEL=...`.
+
+### 14: AI agent factory and the four agents
+
+**Concept:** [agentFactory.ts](src/ai/agents/agentFactory.ts) turns **a prompt file plus a JSON Schema** into an AI agent. `createAgent({ name, prompt, schema })` returns an agent whose `run(vars)` fills the prompt's `{{PLACEHOLDERS}}`, calls the [LLMGateway](src/ai/LLMGateway.ts), validates the reply with AJV and returns typed data. Four agents are built on it: **Test Data**, **RCA**, **Flaky** and **Self-Healer**, and each one feeds a tab of the TTA report.
+
+**Why:** Without a factory, every agent re-implements prompt loading, JSON parsing, validation and report wiring. With it, a new agent is about 20 lines, and every agent behaves the same way: same provider rules, same validation, same error handling.
+
+**Q&A: why use this?**
+- **Q: How do I add a new agent?** A: Write `src/ai/prompts/<name>.prompt.md` with `{{VARS}}`, then call `createAgent({ name, prompt, schema })` in `src/ai/agents/<name>Agent.ts`. The factory adds the schema to the system prompt, so the model is told the exact output shape. Set `attachAs: '<attachment-name>'` to make the output appear on the running test (that is how the AI Data and Self-Heal tabs get their data).
+- **Q: What if the model returns something wrong?** A: `run()` throws if a `{{VAR}}` is missing or the reply breaks the schema, showing the AJV error and the raw JSON. Agents that run inside the reporter (RCA) catch that and fall back to a heuristic, so the report never breaks. Agents that run inside a test (Test Data) let the test fail, so a broken AI step is visible.
+- **Q: What's the gotcha?** A: The TTA report is only written when its reporter runs. `npx playwright test --reporter=line` **replaces** the reporters in `playwright.config.ts`, so the AI tabs keep showing an old run. Run without `--reporter`, and check the run ID in the report header.
+
+```mermaid
+flowchart LR
+    subgraph Agents["Agent = prompt + schema"]
+        TD["Test Data<br/>testDataAgent.ts"]
+        RCA["RCA<br/>rcaAgent.ts"]
+        SH["Self-Healer<br/>selfHealAgent.ts"]
+    end
+    P["src/ai/prompts/*.prompt.md"] --> F
+    TD --> F["createAgent()<br/>fill {{VARS}}, add schema,<br/>AJV validate, attach"]
+    RCA --> F
+    SH --> F
+    F --> G["LLMGateway<br/>provider from .env"]
+    TD -->|"attach 'ai-data'"| R1["AI Data tab"]
+    RCA -->|"reporter onEnd"| R2["AI Verdict tab"]
+    SH -->|"attach 'self-heal'"| R3["Self-Heal tab"]
+    DF["DeFlaky CLI<br/>npm run flaky"] -->|"deflaky-data.js"| R4["Flaky tab"]
+    B["Build vs build diff<br/>flakyAnalyzer.ts"] --> R4
+
+    classDef spec fill:#e8f0fe,stroke:#1a73e8,color:#0b2a5b
+    classDef pom fill:#e6f4ea,stroke:#1e8e3e,color:#0d3b1e
+    classDef util fill:#fef7e0,stroke:#f9ab00,color:#4a3500
+    class TD,RCA,SH spec
+    class F,G pom
+    class P,DF,B,R1,R2,R3,R4 util
+```
+
+```ts
+// src/ai/agents/rcaAgent.ts: a whole agent is one createAgent() call
+export const rcaAgent = createAgent<RcaVerdict>({
+    name: 'rca',
+    prompt: 'rca.prompt.md',            // uses {{TITLE}}, {{FILE}}, {{ERROR}}, {{STACK}}
+    system: 'You are a senior SDET who debugs Playwright test failures.',
+    temperature: 0,
+    schema: {
+        type: 'object',
+        required: ['rootCause', 'severity', 'priority', 'fixes'],
+        properties: {
+            rootCause: { type: 'string', minLength: 1 },
+            severity: { enum: ['low', 'medium', 'high'] },
+            priority: { enum: ['P0', 'P1', 'P2', 'P3'] },
+            fixes: { type: 'array', items: { type: 'string' } },
+        },
+    },
+});
+
+// Calling it
+const verdict = await rcaAgent.run({ TITLE: t.fullTitle, FILE: t.location, ERROR: t.error, STACK: t.errorStack });
+```
+
+| Agent | Files | When it runs | Output | Report tab | Demo spec |
+|---|---|---|---|---|---|
+| **Test Data** | [testDataAgent.ts](src/ai/agents/testDataAgent.ts), [checkoutCustomer.prompt.md](src/ai/prompts/checkoutCustomer.prompt.md) | Inside the test: `DataGenerator.checkoutCustomerAI()` | `{ firstName, lastName, postalCode }`, attached as `ai-data` | AI Data | [e2e-checkout_DataGenAI.spec.ts](src/tests/aiTests/e2e-checkout_DataGenAI.spec.ts) |
+| **RCA** | [rcaAgent.ts](src/ai/agents/rcaAgent.ts), [rca.prompt.md](src/ai/prompts/rca.prompt.md) | Reporter `onEnd`, for each failed test (max 10) | `RcaVerdict { rootCause, severity, priority, fixes[] }`; heuristic fallback if the LLM fails | AI Verdict | [e2e-checkout-failure.spec.ts](src/tests/aiTests/e2e-checkout-failure.spec.ts) (one deliberate failure) |
+| **Flaky** | [flakyAnalyzer.ts](src/ai/agents/flakyAnalyzer.ts), [deflakyRun.js](src/utils/deflakyRun.js) | Every run (build vs previous build) + `npm run flaky` (DeFlaky, N runs) | Flaky/failing lists; DeFlaky FlakeScore and per-test pass rate | Flaky | [e2e-checkout-flaky.spec.ts](src/tests/aiTests/e2e-checkout-flaky.spec.ts) (one deliberate flake) |
+| **Self-Healer** | [selfHealAgent.ts](src/ai/agents/selfHealAgent.ts), [selfHeal.prompt.md](src/ai/prompts/selfHeal.prompt.md) | Auto `selfHealer` fixture in [test-base.ts](src/fixtures/test-base.ts), after a test fails on a locator | Replacement locators, each verified on the live page (1 match, visible), attached as `self-heal` | Self-Heal | [e2e-checkout-selfheal.spec.ts](src/tests/aiTests/e2e-checkout-selfheal.spec.ts) (stale `[data-test="checkout-button"]`) |
+
+**How each agent works:**
+- **Test Data:** the prompt has `{{FIRST_INITIAL}}`, `{{LAST_INITIAL}}` and `{{STATE}}` placeholders filled by Faker. Without them, the same prompt returned the same person every time. The schema requires a 5-digit `postalCode`.
+- **RCA:** the reporter's existing `analyzeFailure()` now calls `rcaAgent`. It is turned on by `hasApiKey()` in [providers.ts](src/ai/config/providers.ts), which now accepts any key the gateway supports.
+- **Flaky:** the report already compared this build with the previous one. [DeFlaky](https://deflaky.com) adds a FlakeScore over N runs: `npm run flaky` runs the spec through the `deflaky` CLI, pushes to the DeFlaky dashboard, then copies `.deflaky/last-run.json` to `tta-report/deflaky-data.js`, which the Flaky tab renders. A wrapper is needed because DeFlaky writes its results only after all runs end, and the TTA report is written during the last run. Playwright also has to write a JSON report (`test-results/results.json`) for DeFlaky to read.
+- **Self-Healer:** after a failure, it reads the dead locator from Playwright's call log (`waiting for locator(...)`). It captures the visible interactive elements of the failing page as compact JSON, not raw HTML, and asks for `page.locator()` selector strings so each one can be checked automatically. The test still fails: the healer only suggests, and never rewrites code.
+
+```bash
+npx playwright test src/tests/aiTests --project=chromium   # all AI demos (2 tests fail on purpose)
+npm run flaky                                              # DeFlaky: 2 runs, push, add to the Flaky tab
+npm run flaky -- src/tests/aiTests/e2e-checkout-flaky.spec.ts 5
+open tta-report/index.html
+```
+
+Full design notes: [learnings/2026-11-14-ai-agent-factory-plan.md](learnings/2026-11-14-ai-agent-factory-plan.md). DeFlaky commands: [learnings/2026-11-14-deflaky-commands.md](learnings/2026-11-14-deflaky-commands.md).
 
 ## Writing tests
 
